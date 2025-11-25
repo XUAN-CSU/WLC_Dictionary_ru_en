@@ -11,16 +11,16 @@ int main(int argc, char *argv[])
     QIcon appIcon;
 
     // Method 1: From resource
-    if (QFile::exists(":/icons/app_icon.ico")) {
-        appIcon = QIcon(":/icons/app_icon.ico");
+    if (QFile::exists(":/images/app_icon.ico")) {
+        appIcon = QIcon(":/images/app_icon.ico");
     }
     // Method 2: From external file
-    else if (QFile::exists("app_icon.ico")) {
-        appIcon = QIcon("app_icon.ico");
+    else if (QFile::exists(":images/app_icon.ico")) {
+        appIcon = QIcon(":images/app_icon.ico");
     }
     // Method 3: From PNG
-    else if (QFile::exists("app_icon.png")) {
-        appIcon = QIcon("app_icon.png");
+    else if (QFile::exists(":images/app_icon.png")) {
+        appIcon = QIcon(":images/app_icon.png");
     }
     // Method 4: Use built-in Qt icon as fallback
     else {
@@ -29,6 +29,8 @@ int main(int argc, char *argv[])
             appIcon = QApplication::style()->standardIcon(QStyle::SP_FileIcon);
         }
     }
+
+    app.setWindowIcon(appIcon);
 
     // Set application properties
     app.setApplicationName("Ru-En");
