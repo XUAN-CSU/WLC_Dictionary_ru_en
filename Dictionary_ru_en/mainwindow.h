@@ -47,8 +47,8 @@ private slots:
 private:
     void setupUI();
     QString convertToRussian(const QString &input);
-    void parseRussianResponse(const QByteArray &data);
-    QString formatMarkdown(const QJsonArray &translations);
+    void parseOpenRussianResponse(const QByteArray &data, const QString &word);
+    QString formatMarkdownFromJson(const QString &word, const QJsonArray &translations, const QJsonArray &sentences);
     void saveWordToHistory(const QString &russianWord, const QString &definition);
     void loadHistory();
     void refreshHistoryList();

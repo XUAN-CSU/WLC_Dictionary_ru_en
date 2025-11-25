@@ -8,7 +8,7 @@
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , historyFile("russian_word_history.txt")
-    , isConverting(false)  // Now this will work
+    , isConverting(false)
 {
     setupUI();
     networkManager = new QNetworkAccessManager(this);
@@ -41,7 +41,7 @@ void MainWindow::setupUI()
     QWidget *centralWidget = new QWidget(this);
     setCentralWidget(centralWidget);
 
-    setWindowTitle("Russian-English Dictionary");
+    setWindowTitle("Russian-English Dictionary (OpenRussian.org)");
     setMinimumSize(900, 600);
 
     mainSplitter = new QSplitter(Qt::Horizontal, this);
@@ -218,32 +218,20 @@ void MainWindow::onLookupWord()
     }
 
     statusLabel->setText("Looking up Russian word: " + russianWord);
-    resultDisplay->setText("Searching...");
+    resultDisplay->setText("Searching OpenRussian.org...");
 
-    // Try multiple dictionary APIs
-
-    // Option 1: MyMemory Translation API (Free, no key needed)
-    QString url = QString("https://api.mymemory.translated.net/get?q=%1&langpair=ru|en")
-                     .arg(russianWord);
-
-    // Option 2: LibreTranslate (Free, may need local instance)
-    // QString url = "https://libretranslate.com/translate";
-    // This would need a POST request
-
-    // Option 3: Yandex Dictionary (Need API key)
-    // QString apiKey = "YOUR_ACTUAL_YANDEX_API_KEY_HERE";
-    // QString url = QString("https://dictionary.yandex.net/api/v1/dicservice.json/lookup?key=%1&lang=ru-en&text=%2")
-    //                  .arg(apiKey, russianWord);
+    // Use OpenRussian.org - much better dictionary
+    QString url = QString("https://en.openrussian.org/ru/%1").arg(russianWord);
 
     networkManager->get(QNetworkRequest(QUrl(url)));
 }
-
 
 void MainWindow::onNetworkReply(QNetworkReply *reply)
 {
     if (reply->error() == QNetworkReply::NoError) {
         QByteArray data = reply->readAll();
-        parseRussianResponse(data);
+        QString word = wordInput->text().trimmed();
+        parseOpenRussianResponse(data, word);
     } else {
         resultDisplay->setText("Word not found or network error: " + reply->errorString());
         statusLabel->setText("Error");
@@ -251,125 +239,151 @@ void MainWindow::onNetworkReply(QNetworkReply *reply)
     reply->deleteLater();
 }
 
-void MainWindow::parseRussianResponse(const QByteArray &data)
+void MainWindow::parseOpenRussianResponse(const QByteArray &data, const QString &word)
 {
-    QJsonDocument doc = QJsonDocument::fromJson(data);
-    if (!doc.isObject()) {
-        resultDisplay->setText("Invalid response from dictionary API.");
-        statusLabel->setText("API Error");
-        return;
-    }
+    QString html = QString::fromUtf8(data);
 
-    QJsonObject response = doc.object();
-    QJsonArray definitions = response["def"].toArray();
+    // Extract JSON data from the script tag
+    QString jsonData;
+    QRegularExpression jsonRegex("<script id=\"__NEXT_DATA__\" type=\"application/json\">(.*?)</script>");
+    QRegularExpressionMatch jsonMatch = jsonRegex.match(html);
 
-    if (definitions.isEmpty()) {
-        resultDisplay->setText("Russian word not found in dictionary.");
-        statusLabel->setText("Not found");
-        return;
-    }
+    if (jsonMatch.hasMatch()) {
+        jsonData = jsonMatch.captured(1);
 
-    // Format for display (HTML)
-    QString result;
-    QString russianWord = response.value("head").toObject().value("text").toString();
+        QJsonDocument doc = QJsonDocument::fromJson(jsonData.toUtf8());
+        if (!doc.isNull()) {
+            QJsonObject root = doc.object();
+            QJsonObject props = root["props"].toObject();
+            QJsonObject pageProps = props["pageProps"].toObject();
+            QJsonObject info = pageProps["info"].toObject();
 
-    result += QString("<h2 style='color: red;'>%1</h2>").arg(russianWord);
-    result += "<h3 style='color: #2E86AB; background-color: #f0f0f0; padding: 5px;'>Russian → English Translations</h3>";
+            // Extract translations from JSON
+            QJsonArray words = info["words"].toArray();
+            if (!words.isEmpty()) {
+                QJsonObject wordData = words[0].toObject();
+                QJsonArray translations = wordData["translations"].toArray();
 
-    for (const QJsonValue &defValue : definitions) {
-        QJsonObject definition = defValue.toObject();
-        QString pos = definition["pos"].toString();
-        QString posText = pos.isEmpty() ? "" : QString(" <i>(%1)</i>").arg(pos);
+                // Format for display
+                QString result;
+                result += QString("<h2 style='color: red;'>%1</h2>").arg(word);
+                result += "<h3 style='color: #2E86AB; background-color: #f0f0f0; padding: 5px;'>Translations</h3>";
+                result += "<ul>";
 
-        QJsonArray translations = definition["tr"].toArray();
-        for (int i = 0; i < translations.size() && i < 10; ++i) {
-            QJsonObject translation = translations[i].toObject();
-            QString englishWord = translation["text"].toString();
+                // Use a counter instead of indexOf
+                int translationIndex = 1;
+                for (const QJsonValue &transValue : translations) {
+                    QJsonObject translation = transValue.toObject();
+                    QJsonArray tls = translation["tls"].toArray();
 
-            result += QString("<p><b>%1.</b> %2%3").arg(i + 1).arg(englishWord, posText);
+                    if (!tls.isEmpty()) {
+                        QString translationText = tls[0].toString();
+                        result += QString("<li><b>%1</b> - %2").arg(translationIndex).arg(translationText);
 
-            // Add synonyms if available
-            if (translation.contains("syn")) {
-                QJsonArray synonyms = translation["syn"].toArray();
-                if (!synonyms.isEmpty()) {
-                    result += "<br><i>Synonyms: ";
-                    QStringList synList;
-                    for (const QJsonValue &synValue : synonyms) {
-                        synList.append(synValue.toObject()["text"].toString());
+                        // Add example if available
+                        QString exampleRu = translation["exampleRu"].toString();
+                        QString exampleTl = translation["exampleTl"].toString();
+                        if (!exampleRu.isEmpty() && !exampleTl.isEmpty()) {
+                            result += QString("<br><i>Example: %1 - %2</i>").arg(exampleRu, exampleTl);
+                        }
+
+                        result += "</li>";
+                        translationIndex++;
                     }
-                    result += synList.join(", ") + "</i>";
                 }
-            }
+                result += "</ul>";
 
-            // Add examples if available
-            if (translation.contains("ex")) {
-                QJsonArray examples = translation["ex"].toArray();
-                for (const QJsonValue &exValue : examples) {
-                    QJsonObject example = exValue.toObject();
-                    QString ruEx = example["text"].toString();
-                    QString enEx = example.value("tr").toArray().first().toObject()["text"].toString();
-                    result += QString("<br><i>Example: %1 → %2</i>").arg(ruEx, enEx);
+                // Extract examples
+                QJsonArray sentences = wordData["sentences"].toArray();
+                if (!sentences.isEmpty()) {
+                    result += "<h3 style='color: #2E86AB; background-color: #f0f0f0; padding: 5px;'>Examples</h3>";
+                    result += "<ul>";
+
+                    for (int i = 0; i < sentences.size() && i < 10; ++i) {
+                        QJsonObject sentence = sentences[i].toObject();
+                        QString ru = sentence["ru"].toString();
+                        QString tl = sentence["tl"].toString();
+
+                        result += QString("<li><b>Russian:</b> %1<br><b>English:</b> %2</li>").arg(ru, tl);
+                    }
+                    result += "</ul>";
                 }
-            }
 
-            result += "</p>";
+                currentDefinition = result;
+
+                // Generate markdown format
+                currentMarkdown = formatMarkdownFromJson(word, translations, sentences);
+
+                resultDisplay->setHtml(result);
+                statusLabel->setText("Found - " + QDateTime::currentDateTime().toString("hh:mm:ss"));
+
+                // Save to history
+                saveWordToHistory(word, result);
+                refreshHistoryList();
+
+                // Auto-copy to clipboard
+                copyToClipboard();
+                return;
+            }
         }
     }
 
-    // Generate markdown format
-    currentMarkdown = formatMarkdown(definitions);
-    currentDefinition = result;
-
-    resultDisplay->setHtml(result);
-    statusLabel->setText("Found - " + QDateTime::currentDateTime().toString("hh:mm:ss"));
-
-    // Save to history
-    saveWordToHistory(russianWord, result);
-    refreshHistoryList();
-
-    // Auto-copy to clipboard
-    copyToClipboard();
+    // Fallback: if JSON parsing fails, use HTML parsing
+    resultDisplay->setText("Could not extract dictionary data from OpenRussian.org");
+    statusLabel->setText("Parse error");
 }
 
-QString MainWindow::formatMarkdown(const QJsonArray &translations)
+QString MainWindow::formatMarkdownFromJson(const QString &word, const QJsonArray &translations, const QJsonArray &sentences)
 {
     QString markdown;
+    markdown += QString("# <font color='red'>%1</font>\n\n").arg(word);
 
-    if (translations.isEmpty()) {
-        return "# No translations found\n";
-    }
+    // Translations section
+    markdown += "## Translations\n\n";
 
-    // Get the Russian word from the first definition
-    QString russianWord = translations.first().toObject().value("text").toString();
-    markdown += QString("# <font color='red'>%1</font>\n\n").arg(russianWord);
-    markdown += "## Russian → English Translations\n\n";
+    // Use a counter instead of indexOf
+    int translationIndex = 1;
+    for (const QJsonValue &transValue : translations) {
+        QJsonObject translation = transValue.toObject();
+        QJsonArray tls = translation["tls"].toArray();
 
-    int counter = 1;
-    for (const QJsonValue &defValue : translations) {
-        QJsonObject definition = defValue.toObject();
-        QString pos = definition["pos"].toString();
-        QString posText = pos.isEmpty() ? "" : QString(" (%1)").arg(pos);
+        if (!tls.isEmpty()) {
+            QString translationText = tls[0].toString();
 
-        QJsonArray englishTranslations = definition["tr"].toArray();
-        for (int i = 0; i < englishTranslations.size() && i < 10; ++i) {
-            QJsonObject translation = englishTranslations[i].toObject();
-            QString englishWord = translation["text"].toString();
+            markdown += QString("**%1. %2**").arg(translationIndex).arg(translationText);
 
-            markdown += QString("%1. **%2**%3").arg(counter++).arg(englishWord, posText);
-
-            // Add synonyms
-            if (translation.contains("syn")) {
-                QJsonArray synonyms = translation["syn"].toArray();
-                if (!synonyms.isEmpty()) {
-                    QStringList synList;
-                    for (const QJsonValue &synValue : synonyms) {
-                        synList.append(synValue.toObject()["text"].toString());
-                    }
-                    markdown += QString("\n   *Synonyms: %1*").arg(synList.join(", "));
-                }
+            // Add example if available
+            QString exampleRu = translation["exampleRu"].toString();
+            QString exampleTl = translation["exampleTl"].toString();
+            if (!exampleRu.isEmpty() && !exampleTl.isEmpty()) {
+                markdown += QString("\n   *Example: %1 → %2*").arg(exampleRu, exampleTl);
             }
 
             markdown += "\n\n";
+            translationIndex++;
+        }
+    }
+
+    // Examples section
+    if (!sentences.isEmpty()) {
+        markdown += "## Examples\n\n";
+
+        for (int i = 0; i < sentences.size() && i < 10; ++i) {
+            QJsonObject sentence = sentences[i].toObject();
+            QString ru = sentence["ru"].toString();
+            QString tl = sentence["tl"].toString();
+
+            // Clean up the text
+            ru.remove(QRegularExpression("<[^>]*>"));
+            ru.replace("&#x27;", "'");
+            ru = ru.simplified();
+
+            tl.remove(QRegularExpression("<[^>]*>"));
+            tl.replace("&#x27;", "'");
+            tl = tl.simplified();
+
+            markdown += QString("* **Russian:** %1\n").arg(ru);
+            markdown += QString("  **English:** %1\n\n").arg(tl);
         }
     }
 
@@ -402,8 +416,8 @@ void MainWindow::copyHistoryToClipboard()
         }
 
         QString plainText = historyText;
-        plainText.replace(QRegularExpression("Russian → English Translations"), "**Russian → English Translations**");
-        plainText.replace(QRegularExpression("^(\\d+\\.)"), "**$1**");
+        plainText.replace(QRegularExpression("Translations"), "**Translations**");
+        plainText.replace(QRegularExpression("Examples"), "**Examples**");
         markdown += plainText;
 
         QApplication::clipboard()->setText(markdown);
