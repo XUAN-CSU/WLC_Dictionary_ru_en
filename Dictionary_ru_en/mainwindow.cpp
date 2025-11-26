@@ -4,36 +4,74 @@
 #include <QEvent>
 #include <QKeyEvent>
 #include <QNetworkRequest>
+#include <QCheckBox>
+#include <QMediaPlayer>
+#include <QAudioOutput>
+#include <QDir>
+#include <QProgressBar>
+#include <QApplication>
+#include <QClipboard>
+#include <QDateTime>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QListWidgetItem>
+#include <QTextStream>
+#include <QUrl>
+#include <QProcess>
+#include <QHBoxLayout>
+#include <QPushButton>
+#include <QMediaPlayer>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , historyFile("russian_word_history.txt")
     , isConverting(false)
+    , networkManager(new QNetworkAccessManager())
+    , ttsNetworkManager(new QNetworkAccessManager())
 {
     setupUI();
-    networkManager = new QNetworkAccessManager(this);
+
     connect(networkManager, &QNetworkAccessManager::finished, this, &MainWindow::onNetworkReply);
+    connect(ttsNetworkManager, &QNetworkAccessManager::finished, this, &MainWindow::onTtsReply);
+
+    // Setup media player for audio playback
+    mediaPlayer = new QMediaPlayer();
+
+    // Qt 6 style (try this first)
+    #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    audioOutput = new QAudioOutput(this);
+    mediaPlayer->setAudioOutput(audioOutput);
+    audioOutput->setVolume(0.7);
+    #else
+    // Qt 5 style
+    mediaPlayer->setVolume(70);
+    #endif
+
+    // Connect signals
+    #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    connect(mediaPlayer, &QMediaPlayer::mediaStatusChanged, this, &MainWindow::onMediaStatusChanged);
+    connect(mediaPlayer, &QMediaPlayer::errorOccurred, this, &MainWindow::onPlayerError);
+    #else
+    connect(mediaPlayer, QOverload<QMediaPlayer::Error>::of(&QMediaPlayer::error), this, &MainWindow::onPlayerError);
+    connect(mediaPlayer, &QMediaPlayer::stateChanged, this, &MainWindow::onMediaStateChanged);
+    #endif
+
+    // Create word_audio directory if it doesn't exist
+    QDir audioDir("word_audio");
+    if (!audioDir.exists()) {
+        audioDir.mkpath(".");
+    }
 
     loadHistory();
 }
 
 MainWindow::~MainWindow()
 {
-}
-
-bool MainWindow::event(QEvent *event)
-{
-    if (event->type() == QEvent::WindowActivate) {
-        wordInput->setFocus();
-        wordInput->selectAll();
-        return true;
-    }
-    else if (event->type() == QEvent::WindowDeactivate) {
-        wordInput->clear();
-        return true;
-    }
-
-    return QMainWindow::event(event);
+    // Clean up
+    #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    delete audioOutput;
+    #endif
 }
 
 void MainWindow::setupUI()
@@ -44,54 +82,69 @@ void MainWindow::setupUI()
     setWindowTitle("Russian-English Dictionary (OpenRussian.org)");
     setMinimumSize(900, 600);
 
-    mainSplitter = new QSplitter(Qt::Horizontal, this);
+    mainSplitter = new QSplitter(Qt::Horizontal, centralWidget);
 
     // Left panel - Lookup
-    QWidget *leftPanel = new QWidget;
+    QWidget *leftPanel = new QWidget(mainSplitter);
     QVBoxLayout *leftLayout = new QVBoxLayout(leftPanel);
 
-    wordInput = new QLineEdit(this);
+    wordInput = new QLineEdit(leftPanel);
     wordInput->setPlaceholderText("Type using English keyboard - characters will convert to Russian automatically...");
     wordInput->setStyleSheet("QLineEdit { padding: 8px; font-size: 14px; }");
 
-    QLabel *lookupLabel = new QLabel("Lookup Result - Russian to English", this);
+    // Audio playback checkbox
+    autoPlayCheckbox = new QCheckBox("Auto-play pronunciation after lookup", leftPanel);
+
+    // Progress bars
+    lookupProgressBar = new QProgressBar(leftPanel);
+    lookupProgressBar->setVisible(false);
+    lookupProgressBar->setRange(0, 0);
+
+    audioProgressBar = new QProgressBar(leftPanel);
+    audioProgressBar->setVisible(false);
+    audioProgressBar->setRange(0, 0);
+
+    QLabel *lookupLabel = new QLabel("Lookup Result - Russian to English", leftPanel);
     lookupLabel->setStyleSheet("QLabel { font-weight: bold; font-size: 12px; padding: 5px; background-color: #e0e0e0; }");
 
-    resultDisplay = new QTextEdit(this);
+    resultDisplay = new QTextEdit(leftPanel);
     resultDisplay->setReadOnly(true);
     resultDisplay->setStyleSheet("QTextEdit { background-color: #f5f5f5; padding: 10px; font-size: 12px; }");
 
     QHBoxLayout *buttonLayout = new QHBoxLayout();
-    lookupButton = new QPushButton("Lookup", this);
-    copyButton = new QPushButton("Copy as Markdown", this);
+    lookupButton = new QPushButton("Lookup", leftPanel);
+    copyButton = new QPushButton("Copy as Markdown", leftPanel);
 
     buttonLayout->addWidget(lookupButton);
     buttonLayout->addWidget(copyButton);
     buttonLayout->addStretch();
 
     leftLayout->addWidget(wordInput);
+    leftLayout->addWidget(autoPlayCheckbox);
+    leftLayout->addWidget(lookupProgressBar);
+    leftLayout->addWidget(audioProgressBar);
     leftLayout->addWidget(lookupLabel);
     leftLayout->addWidget(resultDisplay);
     leftLayout->addLayout(buttonLayout);
 
     // Right panel - History
-    QWidget *rightPanel = new QWidget;
+    QWidget *rightPanel = new QWidget(mainSplitter);
     QVBoxLayout *rightLayout = new QVBoxLayout(rightPanel);
 
-    QLabel *historyLabel = new QLabel("Search History", this);
+    QLabel *historyLabel = new QLabel("Search History", rightPanel);
     historyLabel->setStyleSheet("QLabel { font-weight: bold; font-size: 14px; padding: 5px; background-color: #e0e0e0; }");
 
-    historyList = new QListWidget(this);
+    historyList = new QListWidget(rightPanel);
     historyList->setStyleSheet("QListWidget { font-size: 11px; }");
 
-    QLabel *historyDetailLabel = new QLabel("History Detail", this);
+    QLabel *historyDetailLabel = new QLabel("History Detail", rightPanel);
     historyDetailLabel->setStyleSheet("QLabel { font-weight: bold; font-size: 12px; padding: 5px; background-color: #e0e0e0; }");
 
-    historyDetailDisplay = new QTextEdit(this);
+    historyDetailDisplay = new QTextEdit(rightPanel);
     historyDetailDisplay->setReadOnly(true);
     historyDetailDisplay->setStyleSheet("QTextEdit { background-color: #f8f8f8; padding: 10px; font-size: 11px; border: 1px solid #ccc; }");
 
-    copyHistoryButton = new QPushButton("Copy as Markdown", this);
+    copyHistoryButton = new QPushButton("Copy as Markdown", rightPanel);
 
     rightLayout->addWidget(historyLabel);
     rightLayout->addWidget(historyList);
@@ -106,7 +159,7 @@ void MainWindow::setupUI()
     QVBoxLayout *mainLayout = new QVBoxLayout(centralWidget);
     mainLayout->addWidget(mainSplitter);
 
-    statusLabel = new QLabel("Ready - Type using English keyboard, characters convert to Russian automatically", this);
+    statusLabel = new QLabel("Ready - Type using English keyboard, characters convert to Russian automatically", centralWidget);
     statusLabel->setStyleSheet("QLabel { color: #666; font-size: 10px; padding: 5px; background-color: #f0f0f0; }");
     mainLayout->addWidget(statusLabel);
 
@@ -119,6 +172,211 @@ void MainWindow::setupUI()
     connect(historyList, &QListWidget::itemClicked, this, &MainWindow::onHistoryItemClicked);
 
     wordInput->setFocus();
+}
+void MainWindow::onLookupWord()
+{
+    QString russianWord = wordInput->text().trimmed();
+    if (russianWord.isEmpty()) {
+        resultDisplay->setText("Please enter a Russian word to lookup.");
+        return;
+    }
+
+    currentWord = russianWord;
+
+    // Show lookup progress
+    lookupProgressBar->setVisible(true);
+    statusLabel->setText("Looking up Russian word: " + russianWord);
+    resultDisplay->setText("Searching OpenRussian.org...");
+
+    // Use en.openrussian.org - the correct English interface
+    QString url = QString("https://en.openrussian.org/ru/%1").arg(russianWord);
+
+    networkManager->get(QNetworkRequest(QUrl(url)));
+}
+
+void MainWindow::onNetworkReply(QNetworkReply *reply)
+{
+    lookupProgressBar->setVisible(false);
+
+    if (reply->error() == QNetworkReply::NoError) {
+        QByteArray data = reply->readAll();
+        parseOpenRussianResponse(data, currentWord);
+
+        // Auto-play audio if checkbox is checked
+        if (autoPlayCheckbox->isChecked() && !currentWord.isEmpty()) {
+            downloadAndPlayAudio(currentWord, "ru");
+        }
+    } else {
+        resultDisplay->setText("Word not found or network error: " + reply->errorString());
+        statusLabel->setText("Error");
+    }
+    reply->deleteLater();
+}
+
+void MainWindow::downloadAndPlayAudio(const QString &text, const QString &language)
+{
+    if (text.isEmpty()) return;
+
+    // Check if audio file already exists locally
+    QString safeWord = text;
+    safeWord.replace(QRegularExpression("[^a-zA-Z0-9а-яА-ЯёЁ]"), "_");
+    QString localAudioFile = QString("word_audio/%1_%2.mp3").arg(safeWord).arg(language);
+    QFile file(localAudioFile);
+    if (file.exists()) {
+        // Play local audio file using Qt Multimedia
+        playAudioFile(localAudioFile);
+        return;
+    }
+
+    statusLabel->setText("Downloading audio pronunciation...");
+    audioProgressBar->setVisible(true);
+
+    // Encode text for URL
+    QString encodedText = QUrl::toPercentEncoding(text);
+
+    // Construct Google TTS URL
+    QString url;
+    if (language == "ru") {
+        url = QString("https://translate.google.com/translate_tts?ie=UTF-8&tl=ru&client=tw-ob&q=%1").arg(encodedText);
+    } else {
+        url = QString("https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q=%1").arg(encodedText);
+    }
+
+    // Set headers to mimic a real browser
+    QNetworkRequest request(url);
+    request.setRawHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
+    request.setRawHeader("Referer", "https://translate.google.com/");
+
+    // Download the audio
+    ttsNetworkManager->get(request);
+}
+
+void MainWindow::onTtsReply(QNetworkReply *reply)
+{
+    audioProgressBar->setVisible(false);
+
+    if (reply->error() == QNetworkReply::NoError) {
+        QByteArray audioData = reply->readAll();
+
+        // Save to word_audio folder with filename based on the word
+        QString safeWord = currentWord;
+        safeWord.replace(QRegularExpression("[^a-zA-Z0-9а-яА-ЯёЁ]"), "_");
+        QString localAudioFile = QString("word_audio/%1_ru.mp3").arg(safeWord);
+
+        QFile file(localAudioFile);
+        if (file.open(QIODevice::WriteOnly)) {
+            file.write(audioData);
+            file.close();
+
+            // Play the audio using Qt Multimedia
+            playAudioFile(localAudioFile);
+        } else {
+            statusLabel->setText("Error saving audio file");
+        }
+    } else {
+        statusLabel->setText("Audio download failed: " + reply->errorString());
+    }
+    reply->deleteLater();
+}
+
+void MainWindow::playAudioFile(const QString &filePath)
+{
+    statusLabel->setText("Playing pronunciation...");
+
+    #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    // Qt 6
+    mediaPlayer->setSource(QUrl::fromLocalFile(filePath));
+    #else
+    // Qt 5
+    mediaPlayer->setMedia(QUrl::fromLocalFile(filePath));
+    #endif
+
+    mediaPlayer->play();
+}
+
+// Qt 5 signal handlers
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+void MainWindow::onMediaStateChanged(QMediaPlayer::State state)
+{
+    switch (state) {
+    case QMediaPlayer::PlayingState:
+        statusLabel->setText("Playing pronunciation...");
+        break;
+    case QMediaPlayer::StoppedState:
+        statusLabel->setText("Audio finished playing");
+        break;
+    case QMediaPlayer::PausedState:
+        statusLabel->setText("Audio paused");
+        break;
+    }
+}
+
+void MainWindow::onPlayerError(QMediaPlayer::Error error)
+{
+    statusLabel->setText("Audio playback error: " + mediaPlayer->errorString());
+
+    // Fallback to system playback if Qt Multimedia fails
+    QString filePath = mediaPlayer->currentMedia().canonicalUrl().toLocalFile();
+    if (!filePath.isEmpty()) {
+        #ifdef Q_OS_WIN
+        QString nativePath = QDir::toNativeSeparators(filePath);
+        QString command = QString("cmd /c start \"\" \"%1\"").arg(nativePath);
+        QProcess::startDetached(command);
+        statusLabel->setText("Using system player as fallback...");
+        #endif
+    }
+}
+#endif
+
+// Qt 6 signal handlers
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+void MainWindow::onMediaStatusChanged(QMediaPlayer::MediaStatus status)
+{
+    switch (status) {
+    case QMediaPlayer::LoadedMedia:
+        statusLabel->setText("Audio loaded, playing...");
+        break;
+    case QMediaPlayer::EndOfMedia:
+        statusLabel->setText("Audio finished playing");
+        break;
+    case QMediaPlayer::InvalidMedia:
+        statusLabel->setText("Invalid audio file");
+        break;
+    default:
+        break;
+    }
+}
+
+void MainWindow::onPlayerError(QMediaPlayer::Error error, const QString &errorString)
+{
+    statusLabel->setText("Audio playback error: " + errorString);
+
+    // Fallback to system playback if Qt Multimedia fails
+    QString filePath = mediaPlayer->source().toLocalFile();
+    if (!filePath.isEmpty()) {
+        #ifdef Q_OS_WIN
+        QString nativePath = QDir::toNativeSeparators(filePath);
+        QString command = QString("cmd /c start \"\" \"%1\"").arg(nativePath);
+        QProcess::startDetached(command);
+        statusLabel->setText("Using system player as fallback...");
+        #endif
+    }
+}
+#endif
+
+bool MainWindow::event(QEvent *event)
+{
+    if (event->type() == QEvent::WindowActivate) {
+        wordInput->setFocus();
+        wordInput->selectAll();
+        return true;
+    }
+    else if (event->type() == QEvent::WindowDeactivate) {
+        wordInput->clear();
+        return true;
+    }
+
+    return QMainWindow::event(event);
 }
 
 void MainWindow::showEvent(QShowEvent *event)
@@ -207,36 +465,6 @@ void MainWindow::onTextChanged(const QString &text)
     }
 
     isConverting = false;
-}
-
-void MainWindow::onLookupWord()
-{
-    QString russianWord = wordInput->text().trimmed();
-    if (russianWord.isEmpty()) {
-        resultDisplay->setText("Please enter a Russian word to lookup.");
-        return;
-    }
-
-    statusLabel->setText("Looking up Russian word: " + russianWord);
-    resultDisplay->setText("Searching OpenRussian.org...");
-
-    // Use OpenRussian.org - much better dictionary
-    QString url = QString("https://en.openrussian.org/ru/%1").arg(russianWord);
-
-    networkManager->get(QNetworkRequest(QUrl(url)));
-}
-
-void MainWindow::onNetworkReply(QNetworkReply *reply)
-{
-    if (reply->error() == QNetworkReply::NoError) {
-        QByteArray data = reply->readAll();
-        QString word = wordInput->text().trimmed();
-        parseOpenRussianResponse(data, word);
-    } else {
-        resultDisplay->setText("Word not found or network error: " + reply->errorString());
-        statusLabel->setText("Error");
-    }
-    reply->deleteLater();
 }
 
 void MainWindow::parseOpenRussianResponse(const QByteArray &data, const QString &word)
@@ -490,4 +718,28 @@ void MainWindow::onHistoryItemClicked(QListWidgetItem *item)
 
     historyDetailDisplay->setHtml(fullDefinition);
     statusLabel->setText("History displayed - " + word);
+
+    // Play audio if checkbox is checked
+    if (autoPlayCheckbox->isChecked() && !word.isEmpty()) {
+        playAudioForWord(word);
+    }
+}
+
+void MainWindow::playAudioForWord(const QString &word)
+{
+    // Check if audio file exists locally in word_audio folder
+    QString safeWord = word;
+    safeWord.replace(QRegularExpression("[^a-zA-Z0-9а-яА-ЯёЁ]"), "_");
+    QString localAudioFile = QString("word_audio/%1_ru.mp3").arg(safeWord);
+
+    QFile file(localAudioFile);
+    if (file.exists()) {
+        // Play local audio file
+        playAudioFile(localAudioFile);
+        statusLabel->setText("Playing pronunciation for: " + word);
+    } else {
+        // Download and play audio
+        currentWord = word; // Set current word for the download
+        downloadAndPlayAudio(word, "ru");
+    }
 }
