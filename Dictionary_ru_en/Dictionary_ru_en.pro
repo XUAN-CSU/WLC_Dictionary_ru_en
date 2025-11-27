@@ -60,4 +60,4 @@ QMAKE_TARGET_PRODUCT = "Dictionary_RU_EN"
 RC_LANG = 0x0800
 
 # In Windows cmd /c stops after the first command finishes unless you explicitly chain with &&.
-QMAKE_POST_LINK += cmd /c $$PWD\\bat\\copy_images.bat
+QMAKE_POST_LINK += cmd /c $$PWD\\bat\\copy_images.bat && cmd /c $$PWD\\bat\\\copy_Auto_Add_Version_and_Delete_self_To_release_folder.bat
