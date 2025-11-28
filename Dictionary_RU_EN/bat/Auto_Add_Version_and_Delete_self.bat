@@ -34,20 +34,21 @@ if exist "word_audio" (
 echo Cleanup done.
 
 :: ---------------------------------------------------------
-:: Work in the same folder as the bat (Test folder)
+:: Work in the parent folder
 :: ---------------------------------------------------------
-set "CURRENT_DIR=%~dp0"
-pushd "%CURRENT_DIR%"
+cd ..
+set "PARENT_DIR=%CD%"
+cd "%~dp0"
 
 :: ---------------------------------------------------------
-:: Find max version WLC_release_Vx.x.x
+:: Find max version Dictionary_RU_EN_release_Vx.x.x
 :: ---------------------------------------------------------
 set max_major=0
 set max_minor=0
 set max_patch=0
 
-for /d %%D in (Dictionary_RU_EN_release_V*.*.*) do (
-    for /f "tokens=2-4 delims=V." %%a in ("%%D") do (
+for /d %%D in ("%PARENT_DIR%\Dictionary_RU_EN_release_V*.*.*") do (
+    for /f "tokens=2-4 delims=V." %%a in ("%%~nxD") do (
         set major=%%a
         set minor=%%b
         set patch=%%c
@@ -72,21 +73,31 @@ set "newname=Dictionary_RU_EN_release_V!max_major!.!max_minor!.!next_patch!"
 echo Next version: !newname!
 
 :: ---------------------------------------------------------
-:: COPY WLC_release → new version folder
+:: COPY Dictionary_RU_EN_release → new version folder (excluding this bat file)
 :: ---------------------------------------------------------
-if not exist "Dictionary_RU_EN_release" (
-    echo ERROR: Folder "Dictionary_RU_EN_release" not found!
-    goto :end
+echo Copying Dictionary_RU_EN_release → !newname! (excluding this script)
+
+:: Create destination folder first
+mkdir "%PARENT_DIR%\!newname!" >nul 2>&1
+
+:: Copy everything except this batch file
+for /d %%F in (*) do (
+    if /i not "%%F"=="!newname!" (
+        xcopy "%%F" "%PARENT_DIR%\!newname!\%%F" /E /I /H /K /Y >nul
+    )
 )
 
-echo Copying Dictionary_RU_EN_release → !newname!
-xcopy "Dictionary_RU_EN_release" "!newname!" /E /I /H /K /Y >nul
+for %%F in (*.*) do (
+    if /i not "%%F"=="%~nx0" (
+        copy "%%F" "%PARENT_DIR%\!newname!\%%F" >nul
+    )
+)
 
-echo DONE.
+echo DONE. Created: !newname!
 
-:end
+:: Return to original directory
 popd
 
 :: Self-delete
-start "" /b cmd /c del "%~f0"
-exit /b
+echo Deleting this script file...
+start "" /b cmd /c del "%~f0" & exit /b
